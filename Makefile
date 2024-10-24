@@ -22,6 +22,10 @@ PKG := github.com/vmware-tanzu/velero-plugin-for-microsoft-azure
 REGISTRY ?= velero
 GCR_REGISTRY ?= gcr.io/velero-gcp
 
+OS_VERSION ?= ltsc2022
+TARGET_OS ?= linux
+TARGET_ARCH ?= amd64
+
 # Image name
 IMAGE ?= $(REGISTRY)/$(BIN)
 GCR_IMAGE ?= $(GCR_REGISTRY)/$(BIN)
@@ -29,6 +33,7 @@ GCR_IMAGE ?= $(GCR_REGISTRY)/$(BIN)
 # We allow the Dockerfile to be configurable to enable the use of custom Dockerfiles
 # that pull base images from different registries.
 VELERO_DOCKERFILE ?= Dockerfile
+VELERO_DOCKERFILE_WINDOWS ?= Dockerfile-Windows
 
 # Which architecture to build - see $(ALL_ARCH) for options.
 # if the 'local' rule is being run, detect the ARCH from 'go env'
@@ -44,7 +49,7 @@ ifeq ($(TAG_LATEST), true)
 	IMAGE_TAGS ?= $(IMAGE):$(VERSION) $(IMAGE):latest
 	GCR_IMAGE_TAGS ?= $(GCR_IMAGE):$(VERSION) $(GCR_IMAGE):latest
 else
-	IMAGE_TAGS ?= $(IMAGE):$(VERSION)
+	IMAGE_TAGS ?= $(IMAGE)-$(OS_VERSION):$(VERSION)
 	GCR_IMAGE_TAGS ?= $(GCR_IMAGE):$(VERSION)
 endif
 
@@ -71,6 +76,11 @@ else
 	GIT_TREE_STATE ?= clean
 endif
 
+ifeq ($(ARCH), windows-amd64)
+	VELERO_DOCKERFILE = $(VELERO_DOCKERFILE_WINDOWS)
+	TARGET_OS = windows	
+endif
+
 ###
 ### These variables should not need tweaking.
 ###
@@ -79,6 +89,9 @@ platform_temp = $(subst -, ,$(ARCH))
 GOOS = $(word 1, $(platform_temp))
 GOARCH = $(word 2, $(platform_temp))
 GOPROXY ?= https://proxy.golang.org
+
+container-%:
+	@$(MAKE) --no-print-directory ARCH=$* container
 
 local: build-dirs
 	GOOS=$(GOOS) \
@@ -103,14 +116,22 @@ container:
 ifneq ($(BUILDX_ENABLED), true)
 	$(error $(BUILDX_ERROR))
 endif
+	@echo "docker file: $(VELERO_DOCKERFILE)"
+	@echo "platform: $(BUILDX_PLATFORMS)"
+
+	@docker buildx rm build-az-plugin || true
+	@docker buildx create --use --name=build-az-plugin
+
 	@docker buildx build --pull \
 	--output=type=$(BUILDX_OUTPUT_TYPE) \
 	--platform $(BUILDX_PLATFORMS) \
 	$(addprefix -t , $(IMAGE_TAGS)) \
-	$(addprefix -t , $(GCR_IMAGE_TAGS)) \
 	--build-arg=GOPROXY=$(GOPROXY) \
 	--build-arg=PKG=$(PKG) \
 	--build-arg=BIN=$(BIN) \
+	--build-arg=OS_VERSION=$(OS_VERSION) \
+	--build-arg=TARGETOS=$(TARGET_OS) \
+	--build-arg=TARGETARCH=$(TARGET_ARCH) \
 	--build-arg=VERSION=$(VERSION) \
 	--build-arg=GIT_SHA=$(GIT_SHA) \
 	--build-arg=GIT_TREE_STATE=$(GIT_TREE_STATE) \
